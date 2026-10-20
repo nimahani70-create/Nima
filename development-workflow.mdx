@@ -1,0 +1,57 @@
+---
+title: "Development Workflow"
+description: "How to use GitHub, code review, UI design, tests, documentation and optional analytics in the Cafe Ordering MVP."
+sidebarTitle: "Development Workflow"
+---
+
+# Development workflow
+
+Use these practices for every change to the Cafe Local Network Ordering System.
+
+## Source of truth
+
+- Keep the Python/FastAPI application and local database as the source of truth for ordering.
+- Track code in a dedicated GitHub repository once the user selects or creates the intended repository.
+- Do not place secrets, real customer data, generated SQLite databases, or local environment files in Git.
+- Do not move essential order processing to a cloud dependency; the application must work without public internet access.
+
+## Change workflow
+
+1. **Scope:** describe the user-visible requirement and its acceptance criteria.
+2. **Inspect:** read relevant code, schema, configuration and tests before changing files.
+3. **Design:** update the UI flow and responsive states when a feature changes the customer or staff workflow.
+4. **Implement:** prefer small, focused changes in Python, HTML, CSS and JavaScript.
+5. **Test:** run automated tests and add tests for the new behavior and negative cases.
+6. **Review:** check security, duplicate submissions, server-side price calculation, valid state transitions, error handling and backward compatibility.
+7. **Document:** update API and operator documentation when the behavior changes.
+8. **Release:** use a reviewable branch or pull request, verify the deployment/test result, and keep a rollback path.
+
+## Minimum quality gates
+
+- Customer APIs cannot write menu or administrative data.
+- Staff and admin endpoints enforce authorization in the backend.
+- Server-side code re-reads product prices and availability before accepting an order.
+- Repeated submissions using the same idempotency key do not create duplicate orders.
+- Every status transition follows the configured state machine and is auditable.
+- Database migrations and backups are tested; restart does not lose accepted orders.
+- Public internet loss does not interrupt menu browsing, order submission or staff order handling on the LAN.
+- Frontend assets needed for core operation are hosted locally, not loaded from a CDN.
+- Keyboard access, readable contrast, clear form errors and mobile RTL layout are checked.
+- Do not publish externally or expose a LAN-only URL as a public destination without an explicit deployment decision.
+
+## Tool responsibilities
+
+- **GitHub:** code history, reviewable changes and release tags.
+- **Codex Dev Workflows:** scoped feature development, bug investigation, code review and release checks.
+- **12ui Design / UI UX Designer:** customer and staff flows, responsive screens, visual system and usability checks.
+- **Mintlify:** architecture, API and deployment runbooks.
+- **CodeQR:** optional QR analytics and public campaign links; local menu QR generation should not require an online redirect service.
+- **Data / Build Web Data Visualization:** operational reports only after reliable order metrics and privacy rules are defined.
+- **Windsor.ai / Sales:** optional later use for marketing integrations and commercial analysis; neither is a runtime dependency for ordering.
+
+## Current known limitations of the starter MVP
+
+- Staff order updates use polling rather than WebSocket.
+- HTTP Basic authentication is only a prototype mechanism and requires HTTPS plus a security review before use on a shared network.
+- QR code generation, automated backups, receipt printing and payment integrations require follow-up implementation.
+- The intended GitHub repository has not yet been selected; do not use an unrelated repository by assumption.

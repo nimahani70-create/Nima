@@ -1,0 +1,94 @@
+---
+title: "Cafe Local Ordering System"
+description: "Architecture, local setup, API, security, tests and Windows deployment guide for the Cafe Local Network Ordering System."
+sidebarTitle: "Cafe Ordering System"
+---
+
+# Cafe Local Ordering System
+
+This document is the technical runbook for the Python-based MVP. The core ordering path must continue working when public internet access is unavailable.
+
+## Technology stack
+
+- **Backend:** Python and FastAPI
+- **Frontend:** HTML, CSS and plain JavaScript, Persian RTL
+- **Database:** SQLite on the local host
+- **Runtime:** Uvicorn on Windows during development; optional container packaging later
+- **Live updates:** MVP polling; WebSocket can be introduced after load and reconnection tests
+
+## Local Windows setup
+
+1. Install Python 3.11 or newer.
+2. Extract the project ZIP.
+3. Run `run_windows.bat` from the project directory.
+4. Change staff and administrator passwords in `.env` before sharing the application.
+5. Open `http://127.0.0.1:8000`.
+6. Staff dashboard: `/staff`; administrator product panel: `/admin`; API docs: `/docs`.
+
+Internet access is needed to install dependencies the first time. Essential application operations should not rely on internet after installation.
+
+## Initial database model
+
+The first schema includes:
+
+- `categories`: menu categories and display ordering
+- `products`: descriptions, current prices and availability
+- `orders`: order number, state, fulfillment method, note, total and customer status token
+- `order_items`: immutable product-name/price snapshots and quantities
+- `order_events`: audit trail of status transitions
+
+Prices are integers in the configured currency unit. The server recalculates order totals from current database prices; never trust a total sent by the browser.
+
+## API surface
+
+| Method | Route | Access |
+|---|---|---|
+| GET | `/api/menu` | Public |
+| POST | `/api/orders` | Public, validated |
+| GET | `/api/orders/{order_number}/status?token=...` | Possession of unguessable order token |
+| GET | `/api/staff/orders` | Staff |
+| PATCH | `/api/staff/orders/{order_id}/status` | Staff |
+| GET | `/api/admin/categories` | Admin |
+| GET | `/api/admin/products` | Admin |
+| POST | `/api/admin/products` | Admin |
+| PATCH | `/api/admin/products/{product_id}` | Admin |
+
+The customer should receive an order number and a random token for status lookups. Idempotency keys are used to return the same order for safe retry requests.
+
+## Order state machine
+
+`new → accepted → preparing → ready → completed`
+
+Cancellation is allowed only from the early states defined by the application. Invalid transitions should return HTTP 409 and every accepted transition should be recorded in `order_events`.
+
+## Local-network deployment checklist
+
+- Reserve a stable LAN IP for the host in the router.
+- Bind the service to the intended network interface only when LAN testing begins.
+- Change default passwords and keep `.env` out of version control.
+- Separate guest Wi-Fi from staff/admin devices.
+- Restrict inbound Windows Firewall rules to the café's trusted subnet.
+- Generate the QR code only after the final LAN address has been set.
+- Do not assume a local Wi-Fi network is inherently trusted.
+- For real operations, evaluate HTTPS, stronger session management, login throttling, backups and restore tests.
+
+A QR code containing a private RFC1918 URL will work only from networks that can route to the local server. A public dynamic QR service is not a substitute for an offline local QR pattern when the network has no internet.
+
+## Acceptance tests
+
+1. A customer opens the menu and sees active products.
+2. A submitted order gets a unique number and a server-calculated total.
+3. The staff dashboard can see the order from another LAN device.
+4. Staff can follow only valid status transitions.
+5. A repeated request using the same idempotency key does not create a second order.
+6. Orders persist after the service restarts.
+7. Essential customer and staff operations work with public internet disconnected.
+8. Unauthorized requests cannot access staff/admin APIs.
+9. A backup can be restored and the restored order history verified.
+
+## Current MVP limitations
+
+- Staff order refresh uses polling rather than WebSocket.
+- Staff authentication is HTTP Basic in the development MVP and is not suitable for a real shared network without HTTPS and a security review.
+- QR generation, automated backups, receipt printing and payment integration are follow-up tasks.
+- Validate concurrency, restart recovery and network isolation on the actual intended hardware before production use.
