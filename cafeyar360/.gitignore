@@ -1,0 +1,31 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*token*.txt
+*credentials*.json
+*secret*.json
+# Local databases and their journals
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+# Python, tests, and editor state
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.idea/
+.vscode/
+.DS_Store
+# Operating system temporary files
+*.log
+
+# Optional browser tooling and artifacts
+node_modules/
+test-artifacts/

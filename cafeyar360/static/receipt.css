@@ -1,0 +1,1 @@
+.receipt{max-width:760px;margin:24px auto;padding:24px} .receipt h1{font-size:24px} .receipt p,.receipt li{overflow-wrap:anywhere} @media print{body{background:white}.receipt{border:0;box-shadow:none;margin:0;max-width:none}#print-receipt{display:none}.table-wrap{overflow:visible}}

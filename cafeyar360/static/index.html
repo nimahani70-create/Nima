@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#162621">
+  <meta name="description" content="کافه یار ۳۶۰ | دمو نرم‌افزار یکپارچه مدیریت کافه؛ منوی دیجیتال، سفارش، صندوق، انبار و گزارش هوشمند">
+  <title>کافه یار ۳۶۰ | سیستم یکپارچه مدیریت</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div id="app"><div class="loading-screen"><div class="brand-mark">N</div><p>در حال آماده‌سازی کافه یار ۳۶۰...</p></div></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <dialog id="addon-recipe-dialog" class="login-dialog recipe-dialog">
+    <form data-form="addon-recipe">
+      <div class="row between"><h2>مواد اولیه افزودنی</h2><button type="button" class="icon-btn" data-action="close-addon-recipe">×</button></div>
+      <p class="dim">مقادیر مثبت مواد را اضافه و مقادیر منفی را از رسپی اصلی کم می‌کنند. مثلاً جایگزینی شیر معمولی با شیر گیاهی.</p>
+      <div id="addon-recipe-fields" class="grid cols-2"></div>
+      <button type="submit" class="btn btn-primary full mt">ذخیره رسپی افزودنی</button>
+    </form>
+  </dialog>
+  <dialog id="login-dialog" class="login-dialog">
+    <form id="login-form" method="dialog">
+      <div class="login-top"><span class="brand-mark">N</span><button type="button" class="icon-btn close-dialog" aria-label="بستن">×</button></div>
+      <p class="eyebrow">ورود به فضای مدیریت</p>
+      <h2>خوش آمدید</h2>
+      <p class="dim">برای دسترسی به امکانات مدیریت، کارکنان یا صندوق وارد شوید.</p>
+      <label>نام کاربری<input name="username" autocomplete="username" required placeholder="admin"></label>
+      <label>رمز عبور<input name="password" type="password" autocomplete="current-password" required placeholder="••••••"></label>
+      <button class="btn btn-primary full" type="submit">ورود به پنل <span>↖</span></button>
+      <div class="demo-creds" hidden><strong>حساب‌های دمو</strong><div><button type="button" data-login="admin">مدیر</button><button type="button" data-login="cashier">صندوق‌دار</button><button type="button" data-login="barista">باریستا</button></div><small>این رمزها فقط برای نسخه نمایشی هستند.</small></div>
+    </form>
+  </dialog>
+</body>
+</html>

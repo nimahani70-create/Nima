@@ -1,0 +1,27 @@
+-- Generated schema reference; no user data. Use manage.py init for migrations.
+PRAGMA foreign_keys=ON;
+CREATE TABLE addon_recipes (addon_id INTEGER NOT NULL REFERENCES addons(id) ON DELETE CASCADE, ingredient_id INTEGER NOT NULL REFERENCES ingredients(id), delta REAL NOT NULL, PRIMARY KEY(addon_id,ingredient_id));
+CREATE TABLE addons (id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE, name TEXT NOT NULL, price INTEGER NOT NULL CHECK(price>=0));
+CREATE TABLE attendance (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), action TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE bot_runtime (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at REAL NOT NULL);
+CREATE TABLE cafe_tables (number INTEGER PRIMARY KEY, active INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE categories (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, position INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT DEFAULT '', phone TEXT NOT NULL UNIQUE, consent INTEGER NOT NULL DEFAULT 0, notes TEXT DEFAULT '', created_at TEXT NOT NULL);
+CREATE TABLE expenses (id INTEGER PRIMARY KEY, title TEXT NOT NULL, amount REAL NOT NULL CHECK(amount>=0), kind TEXT NOT NULL DEFAULT 'operating', created_at TEXT NOT NULL);
+CREATE TABLE ingredients (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, unit TEXT NOT NULL, stock REAL NOT NULL DEFAULT 0, unit_cost REAL NOT NULL DEFAULT 0, reorder REAL NOT NULL DEFAULT 0);
+CREATE TABLE inventory_moves (id INTEGER PRIMARY KEY, ingredient_id INTEGER NOT NULL REFERENCES ingredients(id), delta REAL NOT NULL, reason TEXT NOT NULL, order_id INTEGER REFERENCES orders(id), created_at TEXT NOT NULL);
+CREATE TABLE order_events (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders(id), old_status TEXT, new_status TEXT NOT NULL, actor TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE order_items (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE, product_id INTEGER REFERENCES products(id), name TEXT NOT NULL, qty INTEGER NOT NULL, base_price INTEGER NOT NULL, addon_name TEXT DEFAULT '', addon_id INTEGER, addon_price INTEGER NOT NULL DEFAULT 0, line_total INTEGER NOT NULL);
+CREATE TABLE order_materials (order_id INTEGER NOT NULL REFERENCES orders(id), ingredient_id INTEGER NOT NULL REFERENCES ingredients(id), quantity REAL NOT NULL CHECK(quantity>0), PRIMARY KEY(order_id,ingredient_id));
+CREATE TABLE orders (id INTEGER PRIMARY KEY, code TEXT NOT NULL UNIQUE, idempotency_key TEXT NOT NULL UNIQUE, table_num INTEGER REFERENCES cafe_tables(number), fulfillment TEXT NOT NULL, customer_id INTEGER REFERENCES customers(id), customer_name TEXT DEFAULT '', customer_phone TEXT DEFAULT '', note TEXT DEFAULT '', allergy_note TEXT DEFAULT '', allergy_ack INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, payment_method TEXT NOT NULL, total INTEGER NOT NULL, cost_total REAL NOT NULL DEFAULT 0, stock_applied INTEGER NOT NULL DEFAULT 0, customer_token TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT, request_hash TEXT NOT NULL DEFAULT '', recipe_snapshot INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE payment_corrections (id INTEGER PRIMARY KEY, payment_id INTEGER NOT NULL REFERENCES payments(id), old_method TEXT NOT NULL, new_method TEXT NOT NULL, old_reference TEXT NOT NULL, new_reference TEXT NOT NULL, reason TEXT NOT NULL, actor_id INTEGER NOT NULL REFERENCES users(id), created_at TEXT NOT NULL);
+CREATE TABLE payment_discrepancies (id INTEGER PRIMARY KEY, payment_id INTEGER NOT NULL REFERENCES payments(id), expected_amount INTEGER NOT NULL, reported_amount INTEGER NOT NULL, reason TEXT NOT NULL, actor_id INTEGER NOT NULL REFERENCES users(id), created_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved')), resolution TEXT, resolved_by INTEGER REFERENCES users(id), resolved_at TEXT, idempotency_key TEXT NOT NULL UNIQUE);
+CREATE TABLE payments (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL UNIQUE REFERENCES orders(id), amount INTEGER NOT NULL, method TEXT NOT NULL, reference TEXT DEFAULT '', created_at TEXT NOT NULL, actor_id INTEGER REFERENCES users(id), revision INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', price INTEGER NOT NULL CHECK(price>=0), emoji TEXT DEFAULT '☕', category_id INTEGER NOT NULL REFERENCES categories(id), active INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE recipes (product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE, ingredient_id INTEGER NOT NULL REFERENCES ingredients(id), quantity REAL NOT NULL CHECK(quantity>0), PRIMARY KEY(product_id,ingredient_id));
+CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), expires REAL NOT NULL);
+CREATE TABLE telegram_links (code TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), expires REAL NOT NULL);
+CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, telegram_user_id TEXT UNIQUE);
+CREATE INDEX idx_orders_created ON orders(created_at);
+CREATE INDEX idx_orders_status ON orders(status);
