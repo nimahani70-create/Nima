@@ -1,28 +1,27 @@
-# وضعیت و راهنمای GitHub
+# انتشار کافه یار ۳۶۰ در Nima
 
-مقصد درخواستی: `nimahani70-create/cafe-nima-management`، با visibility خصوصی.
+مرجع: https://github.com/nimahani70-create/Nima ، پروژه `cafeyar360/`، شاخه اصلی `main`. مخزن عمومی است؛ فقط سورس بررسی‌شده منتشر شود. مخزن مستقل قدیمی دیگر مقصد انتشار نیست.
 
-در اسپرینت اول، اتصال GitHub فعال و حساب `nimahani70-create` شناسایی شد، ولی هم connector و هم `gh repo view` مخزن را پیدا نکردند. تلاش مجاز برای ساخت با این دستور:
+قبل از کار، آخرین remote main و وضعیت فایل‌های محلی بررسی شود. SHA تاریخی `b8cde863a763594ae36a072bb59aa347004971b3` را جای بررسی آخرین وضعیت قرار ندهید. تاریخچه و checkout مستقل نسخه ۱.۴ حفظ شده و تغییرات آن به زیرپوشه پروژه منتقل می‌شود؛ ریشه سایت Mintlify تغییر نمی‌کند.
 
-```bash
-gh repo create nimahani70-create/cafe-nima-management --private --source=. --remote=origin
-```
-
-با خطای GitHub `Resource not accessible by integration (createRepository)` رد شد. بنابراین مخزن راه دور ساخته نشده، push انجام نشده و اجرای GitHub Actions قابل تأیید نیست. خطای ۴۰۴ به تنهایی اثبات نمی‌کند که مخزن خصوصی در حساب وجود ندارد؛ ممکن است دسترسی برنامه به آن داده نشده باشد.
-
-## اقدام لازم مدیر فنی
-
-۱. اگر مخزن وجود ندارد، در حساب خود یک مخزن **Private** به نام `cafe-nima-management` ایجاد کنید؛ برای انتقال تاریخچه محلی، آن را بدون README و commit اولیه بسازید.
-
-۲. در تنظیمات برنامه GitHub متصل به Codex، این مخزن را به repository access اضافه کنید و مجوز نوشتن محتوا بدهید. به علت وجود `.github/workflows/test.yml`، انتشار workflow نیز باید مجاز باشد. برای CLI محلی می‌توانید با احراز هویت خودتان `gh auth login` را انجام دهید؛ توکن را در چت یا فایل سورس نفرستید.
-
-۳. از همین checkout، پس از تأیید خالی‌بودن remote:
+شاخه نامزد جاری `feature/sprint-2` است. برای هر اسپرینت از نام `feature/sprint-N` استفاده کنید. تغییر بیرون پروژه فقط workflow تأییدشده `.github/workflows/cafeyar360-tests.yml` است. فایل workflow قدیمی داخل زیرپوشه به‌تنهایی در GitHub اجرا نمی‌شود؛ workflow ریشه، با working-directory پروژه و فیلتر مسیر، مرجع CI است.
 
 ```bash
-git remote add origin https://github.com/nimahani70-create/cafe-nima-management.git
-git push -u origin main
+git fetch origin
+git status --short --branch
+git push -u origin feature/sprint-2
 ```
 
-اگر remote قبلاً history دارد، ابتدا `git fetch origin` و مقایسه تاریخچه انجام شود؛ از force push استفاده نشود. اگر تنها بسته bundle را منتقل کرده‌اید، `git clone cafeyar360-sprint1.bundle cafe-nima-management` تاریخچه را بازیابی می‌کند؛ remote آن clone به فایل bundle اشاره می‌کند و باید آگاهانه به URL بالا تغییر کند.
+پس از بررسی امنیت و موفقیت تست‌ها، PR به main ایجاد و نتیجه Actions روی HEAD واقعی آن بررسی شود. Force Push یا reset مخرب ممنوع است. اگر main پس از انتشار شاخه تغییر کرد، آن را با commit ادغام عادی هماهنگ کنید. هیچ بخش دیگر مخزن در PR نباید تغییر کند.
 
-پس از push، وضعیت Private و نتیجه Actions بررسی شود. دیتابیس، `.env`، بکاپ و توکن نباید در Git باشند؛ `.gitignore` آن‌ها را کنار می‌گذارد. دیتابیس نمونه از `DEMO_MODE=1 python manage.py init` ساخته می‌شود؛ در Windows متغیر محیطی را با `set` تنظیم کنید.
+PR بدون تأیید صریح مالک ادغام نمی‌شود. اسپرینت سوم بعد از تأیید و ادغام PR دوم از main به‌روز شروع می‌شود. قبل از تأیید، خروجی‌ها فقط با برچسب candidate در Drive/review قرار می‌گیرند؛ نسخه رسمی پس از تأیید و ادغام از SHA نهایی ساخته می‌شود.
+
+برای انتقال bundle، شاخه آن را صریح انتخاب کنید؛ origin حاصل از clone bundle به فایل محلی اشاره می‌کند و باید آگاهانه به URL مخزن Nima تنظیم شود. هیچ history از checkout قبلی حذف نمی‌شود و main بدون PR بازنویسی نمی‌شود.
+
+اگر Push یا ایجاد/تغییر workflow رد شد، خطای واقعی گزارش و مجوز نوشتن contents و workflow برای اتصال GitHub درخواست شود؛ توکن در چت یا سورس نوشته نشود. دسترسی خواندن یا metadata دارای push به‌تنهایی شاهد موفقیت Push نیست. لینک Commit/PR فقط پس از ایجاد و بازخوانی آن‌ها گزارش شود.
+
+پوشه سورس و پشتیبان نهایی: https://drive.google.com/drive/folders/1NArzX1JX6zGgmn3oxnisgBdX-yPSbR0S
+
+پوشه نامزد و دمو/review: https://drive.google.com/drive/folders/1XQacIaCup98FmarhKyJZjrow_A_Fr9Md
+
+ZIP پروژه و workflow مجاز باید مستقیماً از commit اعلام‌شده ساخته شوند. فایل‌های اضافه، .env و DB عملیاتی داخل ZIP سورس نیستند. DB نمونه جدا و فقط ساختگی است. Bundle، گزارش، نتایج تست و SHA256 همراه نسخه‌اند. پس از آپلود، ZIP دوباره خوانده و hash و محتوایش با همان commit تطبیق داده شوند؛ در صورت نبود اتصال، فایل‌های محلی آماده و خطا شفاف گزارش شوند.

@@ -7,8 +7,12 @@ import subprocess
 import sys
 import time
 
+from manage import initialize
+
 
 def main():
+    os.environ.setdefault('DEMO_MODE','1')
+    initialize()
     env=os.environ.copy()
     token=env.get('TELEGRAM_BOT_TOKEN')
     if not token:

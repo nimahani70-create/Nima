@@ -2,6 +2,10 @@
 import argparse
 import getpass
 import sqlite3
+import os
+import sys
+import secrets
+from datetime import datetime, timezone
 from pathlib import Path
 
 import app as server
@@ -13,6 +17,7 @@ def change_password(username, password):
     # Do not call init_db: this command must work on legacy demo databases.
     if not server.DB_PATH.exists():
         raise ValueError('Database does not exist; run init first')
+    automatic_backup('password')
     with server.db() as c:
         c.execute('BEGIN IMMEDIATE')
         row=c.execute('SELECT id FROM users WHERE username=?',(username,)).fetchone()
@@ -42,8 +47,40 @@ def backup(destination):
         raise
 
 
+def automatic_backup(operation):
+    if not server.DB_PATH.exists():return None
+    stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+    target=server.DB_PATH.parent/'backups'/f'before-{operation}-{stamp}-{secrets.token_hex(4)}.sqlite3'
+    backup(target)
+    return target
+
+
+def initialize():
+    fresh=True
+    if server.DB_PATH.exists():
+        c=sqlite3.connect(server.DB_PATH.resolve().as_uri()+'?mode=ro',uri=True)
+        try:
+            has_users=c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
+            fresh=not has_users or c.execute('SELECT COUNT(*) FROM users').fetchone()[0]==0
+        finally:c.close()
+    if fresh:
+        for username in ('admin','cashier','barista'):
+            key='CAFE_PASSWORD_'+username.upper()
+            password=os.getenv(key,'')
+            if not password:
+                if not sys.stdin.isatty():
+                    raise ValueError('Non-interactive setup requires CAFE_PASSWORD_ADMIN, CAFE_PASSWORD_CASHIER and CAFE_PASSWORD_BARISTA; no password is read or printed')
+                password=getpass.getpass('New local password for '+username+' (12+ characters): ')
+                if password!=getpass.getpass('Confirm password for '+username+': '):
+                    raise ValueError('Passwords do not match')
+            if len(password)<12:raise ValueError('Every local password must contain at least 12 characters')
+            os.environ[key]=password
+    automatic_backup('init')
+    server.init_db()
+
+
 def main():
-    parser=argparse.ArgumentParser(description='CafeYar360 local administration')
+    parser=argparse.ArgumentParser(description='Cafe Yar 360 local administration')
     sub=parser.add_subparsers(dest='command',required=True)
     sub.add_parser('init',help='Create or migrate the database; DEMO_MODE=1 opts into sample data')
     pwd=sub.add_parser('password',help='Change a password and revoke all sessions for that user')
@@ -53,7 +90,7 @@ def main():
     args=parser.parse_args()
     try:
         if args.command=='init':
-            server.init_db()
+            initialize()
         elif args.command=='password':
             password=getpass.getpass('New password (12+ characters): ')
             if password != getpass.getpass('Confirm password: '):

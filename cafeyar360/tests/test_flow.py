@@ -1,16 +1,20 @@
 import pytest
 from fastapi.testclient import TestClient
 import app as server
+from conftest import TEST_PASSWORDS
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(server, 'DB_PATH', tmp_path / 'test.sqlite3')
     with TestClient(server.app) as c:
+        with server.db() as db:
+            db.execute('INSERT INTO cashier_shifts(opening_minor,opened_by,opened_at,idempotency_key) VALUES(?,?,?,?)',(0,1,server.now(),'test-fixture-shift'))
         yield c
 
 
-def auth(c, who='admin', password='123456'):
+def auth(c, who='admin', password=None):
+    password=TEST_PASSWORDS[who] if password is None else password
     r=c.post('/api/auth/login',json={'username':who,'password':password})
     assert r.status_code==200,r.text
     return r.json()
@@ -82,7 +86,7 @@ def test_complete_order_stock_cash_finance_and_crm(client):
 
 
 def test_roles_attendance_and_product_management(client):
-    auth(client,'barista','345678')
+    auth(client,'barista')
     assert client.get('/api/orders').status_code==200
     assert client.get('/api/finance').status_code==403
     assert client.post('/api/attendance/punch',json={'action':'in'}).status_code==200
@@ -91,7 +95,7 @@ def test_roles_attendance_and_product_management(client):
     link=client.post('/api/attendance/telegram-link',json={}).json()
     assert link['code'] and link['expires_seconds']==600
     client.post('/api/auth/logout')
-    auth(client,'cashier','234567')
+    auth(client,'cashier')
     assert client.get('/api/orders').status_code==200
     assert client.patch('/api/orders/1/status',json={'status':'accepted'}).status_code==403
     assert client.get('/api/inventory').status_code==403
