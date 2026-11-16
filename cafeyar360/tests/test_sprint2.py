@@ -147,6 +147,7 @@ def test_concurrent_correction_allows_only_one_revision(client):
     def correct(n):
         with TestClient(server.app) as other:
             other.cookies.update(cookies)
+            other.headers['X-CSRF-Token']=client.headers['X-CSRF-Token']
             return other.patch(f'/api/payments/{pid}/correction',json={'method':'pos','reference':str(n),'reason':'اصلاح هم‌زمان آزمایشی','expected_revision':0}).status_code
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert sorted(pool.map(correct,range(2)))==[200,409]
@@ -324,6 +325,7 @@ def test_concurrent_refunds_cannot_exceed_remaining(client):
     def run(n):
         with TestClient(server.app) as other:
             other.cookies.update(cookies)
+            other.headers['X-CSRF-Token']=client.headers['X-CSRF-Token']
             return refund(other,pay,order['total'],key=f'concurrent-refund-{n}').status_code
     with ThreadPoolExecutor(max_workers=2) as pool:assert sorted(pool.map(run,range(2)))==[201,409]
     with server.db() as c:
@@ -452,6 +454,7 @@ def test_concurrent_shift_opening_has_one_winner(client):
     def opening(n):
         with TestClient(server.app) as other:
             other.cookies.update(cookies)
+            other.headers['X-CSRF-Token']=client.headers['X-CSRF-Token']
             return other.post('/api/cashier/shifts',json={'opening_amount':0,'idempotency_key':f'concurrent-shift-{n}'}).status_code
     with ThreadPoolExecutor(max_workers=2) as pool:assert sorted(pool.map(opening,range(2)))==[201,409]
     with server.db() as c:assert c.execute('SELECT COUNT(*) FROM cashier_shifts WHERE closed_at IS NULL').fetchone()[0]==1
@@ -462,6 +465,7 @@ def test_close_payment_race_never_books_into_closed_shift(client):
     def action(n):
         with TestClient(server.app) as other:
             other.cookies.update(cookies)
+            other.headers['X-CSRF-Token']=client.headers['X-CSRF-Token']
             if n==0:return other.post(f"/api/orders/{order['id']}/pay",json={'method':'cash'}).status_code
             return other.post(f'/api/cashier/shifts/{sid}/close',json={'counted_amount':0,'note':'تست هم‌زمانی'}).status_code
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -609,6 +613,7 @@ def test_delivery_and_full_refund_race_consumes_recipe_only_once(client):
     def action(n):
         with TestClient(server.app) as other:
             other.cookies.update(cookies)
+            other.headers['X-CSRF-Token']=client.headers['X-CSRF-Token']
             return other.patch(f"/api/orders/{order['id']}/status",json={'status':'completed'}).status_code if n==0 else refund(other,pay,order['total']).status_code
     with ThreadPoolExecutor(max_workers=2) as pool:delivery,returned=list(pool.map(action,range(2)))
     assert delivery in (200,409) and returned==201

@@ -36,7 +36,7 @@ PRODUCT_NAME = 'کافه یار ۳۶۰'
 CAFE_NAME = 'کافه نیما'
 PUBLIC_BASE_URL = os.getenv('PUBLIC_BASE_URL', '').rstrip('/')
 COOKIE_NAME = 'cafe_nima_session'
-ROLES = {'admin', 'cashier', 'staff'}
+ROLES = {'admin', 'cashier', 'barista', 'staff'}
 STATUS_FLOW = {'new': {'accepted', 'cancelled'}, 'accepted': {'preparing', 'cancelled'}, 'preparing': {'ready'}, 'ready': {'completed'}, 'completed': set(), 'cancelled': set()}
 
 
@@ -94,6 +94,7 @@ def migrate(c):
     c.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(1,?)",(now(),))
     c.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(2,?)",(now(),))
     _migrate_financial(c)
+    workforce.migrate(c)
     c.execute('COMMIT')
 
 
@@ -314,6 +315,7 @@ def shift_data(c,row):
 
 
 def init_db():
+    workforce.backup_before_upgrade()
     with db() as c:
         c.executescript('''
         CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, telegram_user_id TEXT UNIQUE);
@@ -438,6 +440,7 @@ def init_db():
         _migrate_financial(c)
         for row in c.execute('SELECT id FROM orders WHERE stock_applied=0').fetchall():
             snapshot_recipe(c,row['id'])
+        workforce.sync_tables(c)
         c.execute('COMMIT')
 
 
@@ -446,7 +449,7 @@ async def lifespan(app):
     init_db()
     yield
 
-app = FastAPI(title='Cafe Yar 360 Management', version='1.4.1', lifespan=lifespan)
+app = FastAPI(title='Cafe Yar 360 Management', version='1.5.0', lifespan=lifespan)
 @app.exception_handler(RequestValidationError)
 def invalid_input(request: Request, exc: RequestValidationError):
     # Return field locations without reflecting passwords or non-finite JSON values.
@@ -471,7 +474,7 @@ app.mount('/static', StaticFiles(directory=ROOT / 'static'), name='static')
 @app.get('/', response_class=HTMLResponse)
 @app.get('/{page}', response_class=HTMLResponse)
 def main_page(page: str = 'menu'):
-    if page not in {'menu','staff','cashier','admin','inventory','finance','analytics','crm','attendance','presentation'}:
+    if page not in {'menu','staff','cashier','admin','inventory','finance','analytics','crm','attendance','presentation','employees','tables'}:
         api_error(404,'صفحه یافت نشد')
     return FileResponse(ROOT/'static'/'index.html')
 
@@ -482,15 +485,16 @@ def current_user(request: Request):
         api_error(401, 'برای مشاهده این بخش وارد شوید')
     digest=hashlib.sha256(raw.encode()).hexdigest()
     with db() as c:
-        user = c.execute('SELECT users.id,users.name,users.role,users.username FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND expires>?',(digest,time.time())).fetchone()
+        user = c.execute('SELECT users.id,users.name,users.role,users.username FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND expires>? AND users.active=1',(digest,time.time())).fetchone()
     if not user:
         api_error(401,'نشست منقضی شده است')
-    return asdict(user)
+    return dict(asdict(user),csrf_token=workforce.csrf(raw))
 
 
 def allowed(*roles):
     def dependency(user=Depends(current_user)):
-        if user['role'] not in roles:
+        effective='staff' if user['role']=='barista' else user['role']
+        if effective not in roles:
             api_error(403,'دسترسی کافی نیست')
         return user
     return dependency
@@ -501,19 +505,15 @@ class InputModel(BaseModel):
 
 
 class Login(InputModel):
-    username: str
-    password: str
+    username: str = Field(min_length=1,max_length=60)
+    password: str = Field(min_length=1,max_length=256)
 
 
 @app.post('/api/auth/login')
-def login(body: Login):
+def login(body: Login,request:Request):
     with db() as c:
-        u=c.execute('SELECT * FROM users WHERE username=?',(body.username.strip(),)).fetchone()
-        if not u or not verify(body.password,u['password_hash']):
-            api_error(401,'نام کاربری یا رمز عبور نادرست است')
-        raw=secrets.token_urlsafe(32)
-        c.execute('INSERT INTO sessions(token_hash,user_id,expires) VALUES(?,?,?)',(hashlib.sha256(raw.encode()).hexdigest(),u['id'],time.time()+12*3600))
-    resp=Response(content=json.dumps({'id':u['id'],'name':u['name'],'role':u['role'],'username':u['username']},ensure_ascii=False),media_type='application/json')
+        u,raw=workforce.login(c,body.username.strip(),body.password,request.client.host if request.client else 'unknown')
+    resp=Response(content=json.dumps({'id':u['id'],'name':u['name'],'role':u['role'],'username':u['username'],'csrf_token':workforce.csrf(raw)},ensure_ascii=False),media_type='application/json')
     resp.set_cookie(COOKIE_NAME,raw,httponly=True,samesite='lax',secure=COOKIE_SECURE,max_age=12*3600,path='/')
     return resp
 
@@ -547,7 +547,7 @@ def public_menu():
         categories=[asdict(r) for r in c.execute('SELECT * FROM categories ORDER BY position,id')]
         products=[asdict(r) for r in c.execute('SELECT * FROM products WHERE active=1 ORDER BY id')]
         addons=[asdict(r) for r in c.execute('SELECT * FROM addons ORDER BY id')]
-        tables=[r['number'] for r in c.execute('SELECT number FROM cafe_tables WHERE active=1 ORDER BY number')]
+        tables=[r['display_number'] for r in c.execute('SELECT display_number FROM cafe_tables WHERE active=1 ORDER BY display_number')]
     for p in products:
         p['addons']=[a for a in addons if a['product_id']==p['id']]
     return {'categories':categories,'products':products,'tables':tables}
@@ -593,7 +593,8 @@ def create_order(body: OrderCreate):
                 api_error(409,'کلید تکرار متعلق به درخواست دیگری است؛ سفارش قبلی را بررسی کنید')
             c.execute('COMMIT')
             return {'id':old['id'],'code':old['code'],'token':old['customer_token'],'total':old['total'],'status':old['status'],'duplicate':True}
-        if body.table is not None and not c.execute('SELECT 1 FROM cafe_tables WHERE number=? AND active=1',(body.table,)).fetchone():
+        table=workforce.resolve_table(c,body.table) if body.table is not None else None
+        if body.table is not None and (not table or not table['active']):
             api_error(422,'میز معتبر نیست')
         lines=[]; total=0
         for item in body.items:
@@ -620,8 +621,8 @@ def create_order(body: OrderCreate):
         code='CN-'+datetime.now().strftime('%m%d')+'-'+secrets.token_hex(3).upper()
         token=secrets.token_urlsafe(24)
         oid=c.execute('INSERT INTO orders(code,idempotency_key,table_num,fulfillment,customer_id,customer_name,customer_phone,note,allergy_note,status,payment_method,total,customer_token,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-          (code,body.idempotency_key,body.table,body.fulfillment,customer_id,body.customer_name.strip(),phone,body.note.strip(),body.allergy_note.strip(),'new',body.payment_method,total,token,now())).lastrowid
-        c.execute('UPDATE orders SET request_hash=? WHERE id=?',(request_hash,oid))
+          (code,body.idempotency_key,table['number'] if table else None,body.fulfillment,customer_id,body.customer_name.strip(),phone,body.note.strip(),body.allergy_note.strip(),'new',body.payment_method,total,token,now())).lastrowid
+        c.execute('UPDATE orders SET request_hash=?,table_number_snapshot=? WHERE id=?',(request_hash,table['display_number'] if table else None,oid))
         for p in lines:
             c.execute('INSERT INTO order_items(order_id,product_id,name,qty,base_price,addon_name,addon_id,addon_price,line_total) VALUES(?,?,?,?,?,?,?,?,?)',(oid,*p))
         snapshot_recipe(c,oid)
@@ -633,7 +634,7 @@ def create_order(body: OrderCreate):
 @app.get('/api/orders/{code}/status')
 def order_status(code: str,token: str):
     with db() as c:
-        o=c.execute('SELECT o.id,o.code,o.status,o.total,o.table_num,o.fulfillment,o.payment_method,o.created_at,p.id AS payment_id FROM orders o LEFT JOIN payments p ON p.order_id=o.id WHERE o.code=? AND o.customer_token=?',(code,token)).fetchone()
+        o=c.execute('SELECT o.id,o.code,o.status,o.total,COALESCE(o.table_number_snapshot,o.table_num) AS table_num,o.fulfillment,o.payment_method,o.created_at,p.id AS payment_id FROM orders o LEFT JOIN payments p ON p.order_id=o.id WHERE o.code=? AND o.customer_token=?',(code,token)).fetchone()
         if not o:
             api_error(404,'سفارش یافت نشد')
         return asdict(o)
@@ -641,6 +642,8 @@ def order_status(code: str,token: str):
 
 def order_full(c,o):
     r=asdict(o)
+    r['table_id']=r['table_num']
+    r['table_num']=r.get('table_number_snapshot') or r['table_num']
     for internal in ('request_hash','customer_token','recipe_snapshot'):
         r.pop(internal,None)
     r['items']=[asdict(x) for x in c.execute('SELECT * FROM order_items WHERE order_id=?',(o['id'],))]
@@ -667,7 +670,12 @@ def get_orders(status: str='all', queue: str='history', limit: int=Query(100,ge=
             if status not in STATUS_FLOW:
                 api_error(422,'وضعیت نامعتبر است')
             rows=c.execute('SELECT * FROM orders WHERE status=? ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?',(status,limit,offset)).fetchall()
-        return [order_full(c,o) for o in rows]
+        result=[order_full(c,o) for o in rows]
+        if user['role'] in ('staff','barista'):
+            for item in result:
+                for key in ('cost_total','cost_total_minor','waste_cost_minor','wasted_at','customer_phone','payment','refunded_minor','payment_status'):
+                    item.pop(key,None)
+        return result
 
 
 class StatusUpdate(InputModel):
@@ -998,7 +1006,7 @@ def cashier_summary(user=Depends(allowed('admin','cashier'))):
 
 def receipt_data(c,oid):
     if not c.in_transaction:c.execute('BEGIN')
-    order=c.execute('SELECT id,code,table_num,fulfillment,total,created_at,status FROM orders WHERE id=?',(oid,)).fetchone()
+    order=c.execute('SELECT id,code,COALESCE(table_number_snapshot,table_num) AS table_num,fulfillment,total,created_at,status FROM orders WHERE id=?',(oid,)).fetchone()
     if not order:api_error(404,'سفارش پیدا نشد')
     pay=c.execute('SELECT p.*,u.username AS actor FROM payments p LEFT JOIN users u ON u.id=p.actor_id WHERE order_id=?',(oid,)).fetchone()
     if not pay:api_error(409,'رسید تسویه پس از ثبت پرداخت صادر می‌شود')
@@ -1036,7 +1044,8 @@ def receipt_html(oid:int,refund_id:int|None=None,user=Depends(allowed('admin','c
 @app.get('/api/qr/{num}')
 def table_qr(num:int,request:Request):
     with db() as c:
-        if not c.execute('SELECT 1 FROM cafe_tables WHERE number=? AND active=1',(num,)).fetchone():
+        table=workforce.resolve_table(c,num)
+        if not table or not table['active']:
             api_error(404,'شماره میز یافت نشد')
     base=PUBLIC_BASE_URL or str(request.base_url).rstrip('/')
     url=f'{base}/menu?table={num}'
@@ -1050,7 +1059,7 @@ def catalog(user=Depends(allowed('admin'))):
     with db() as c:
         return {'categories':[asdict(x) for x in c.execute('SELECT * FROM categories ORDER BY position')],
                 'products':[dict(asdict(x),addons=[asdict(z) for z in c.execute('SELECT * FROM addons WHERE product_id=?',(x['id'],))]) for x in c.execute('SELECT * FROM products ORDER BY id DESC')],
-                'tables':[asdict(x) for x in c.execute('SELECT * FROM cafe_tables ORDER BY number')],
+                'tables':[dict(workforce.table_dict(x),stable_id=x['number']) for x in c.execute('SELECT * FROM cafe_tables ORDER BY display_number')],
                 'addon_recipes':[asdict(x) for x in c.execute('SELECT * FROM addon_recipes')]} 
 
 
@@ -1413,9 +1422,9 @@ def crm_note(cid:int,body:CustomerNote,user=Depends(allowed('admin'))):
 def attendance(user=Depends(allowed('admin','staff','cashier'))):
     with db() as c:
         uid=None if user['role']=='admin' else user['id']
-        users=[asdict(u) for u in c.execute('SELECT id,name,role,username,telegram_user_id FROM users WHERE (? IS NULL OR id=?) ORDER BY id',(uid,uid))]
+        users=[asdict(u) for u in c.execute('SELECT id,name,role,username,telegram_user_id,active FROM users WHERE (? IS NULL OR id=?) ORDER BY id',(uid,uid))]
         rows=[asdict(r) for r in c.execute('''SELECT a.*,u.name FROM attendance a JOIN users u ON a.user_id=u.id
-                 WHERE (? IS NULL OR a.user_id=?) ORDER BY a.id DESC LIMIT 80''',(uid,uid))]
+                 WHERE a.voided=0 AND (? IS NULL OR a.user_id=?) ORDER BY a.created_at DESC,a.id DESC LIMIT 80''',(uid,uid))]
         running=c.execute("SELECT value,updated_at FROM bot_runtime WHERE key='online'").fetchone()
         username=c.execute("SELECT value FROM bot_runtime WHERE key='username'").fetchone()
         connected=bool(running and running['value']=='1' and time.time()-running['updated_at']<75)
@@ -1428,16 +1437,12 @@ class PunchInput(InputModel):
     action:str
 
 
-def punch_for_user(uid:int, action:str, source:str):
-    if action not in ('in','out'):api_error(422,'نوع تردد نامعتبر است')
+def punch_for_user(uid:int, action:str, source:str, at=None):
     with db() as c:
         c.execute('BEGIN IMMEDIATE')
-        last=c.execute('SELECT action FROM attendance WHERE user_id=? ORDER BY id DESC LIMIT 1',(uid,)).fetchone()
-        if not last and action=='out':api_error(409,'ابتدا ورود خود را ثبت کنید')
-        if last and last['action']==action:api_error(409,'آخرین تردد شما همین وضعیت را دارد')
-        oid=c.execute('INSERT INTO attendance(user_id,action,source,created_at) VALUES(?,?,?,?)',(uid,action,source,now())).lastrowid
+        result=workforce.punch(c,uid,action,source,at)
         c.execute('COMMIT')
-        return {'id':oid,'action':action,'created_at':now()}
+        return result
 
 
 @app.post('/api/attendance/punch')
@@ -1449,11 +1454,20 @@ def attendance_punch(body:PunchInput,user=Depends(allowed('admin','staff','cashi
 def attendance_link(user=Depends(allowed('admin','staff','cashier'))):
     code=secrets.token_urlsafe(6).replace('-','').replace('_','')[:8].upper()
     with db() as c:
+        c.execute('BEGIN IMMEDIATE')
+        workforce.active_user(c,user['id'])
         c.execute('DELETE FROM telegram_links WHERE user_id=?',(user['id'],))
         c.execute('INSERT INTO telegram_links(code,user_id,expires) VALUES(?,?,?)',(code,user['id'],time.time()+600))
+        c.execute('COMMIT')
     return {'code':code,'expires_seconds':600,'instruction':f'/link {code}'}
 
 
 @app.get('/api/demo/health')
 def health():
     return {'ok':True,'database':str(DB_PATH.name),'mode':'demo' if DEMO_MODE else 'local','online_payments':False}
+
+
+# Register additive workforce services after core endpoints and helpers are defined.
+import sys as _sys
+import workforce
+workforce.register(_sys.modules[__name__])

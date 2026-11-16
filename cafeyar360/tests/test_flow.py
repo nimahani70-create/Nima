@@ -10,6 +10,10 @@ def client(tmp_path, monkeypatch):
     with TestClient(server.app) as c:
         with server.db() as db:
             db.execute('INSERT INTO cashier_shifts(opening_minor,opened_by,opened_at,idempotency_key) VALUES(?,?,?,?)',(0,1,server.now(),'test-fixture-shift'))
+        from datetime import datetime,timedelta,timezone
+        with server.db() as db:
+            for uid in (1,2,3):
+                db.execute('INSERT INTO employee_shifts(user_id,starts_at,ends_at,actor_id) VALUES(?,?,?,1)',(uid,(datetime.now(timezone.utc)-timedelta(hours=12)).isoformat(),(datetime.now(timezone.utc)+timedelta(hours=12)).isoformat()))
         yield c
 
 
@@ -17,6 +21,7 @@ def auth(c, who='admin', password=None):
     password=TEST_PASSWORDS[who] if password is None else password
     r=c.post('/api/auth/login',json={'username':who,'password':password})
     assert r.status_code==200,r.text
+    c.headers['X-CSRF-Token']=r.json()['csrf_token']
     return r.json()
 
 
