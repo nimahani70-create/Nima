@@ -26,7 +26,9 @@ def backup_before_upgrade():
     with sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True) as source:
         tables={r[0] for r in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if 'users' not in tables or not source.execute('SELECT 1 FROM users LIMIT 1').fetchone():return
-        if 'schema_migrations' in tables and source.execute('SELECT 1 FROM schema_migrations WHERE version=4').fetchone():return
+        if 'schema_migrations' in tables and source.execute('SELECT 1 FROM schema_migrations WHERE version=4').fetchone():
+            columns={r[1] for r in source.execute('PRAGMA table_info(telegram_inbox)')}
+            if {'delivery_error','delivery_attempts','retry_at'}<=columns:return
         target=path.parent/'backups'/('before-workforce-v4-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')+'-'+secrets.token_hex(4)+'.sqlite3')
         target.parent.mkdir(parents=True,exist_ok=True)
         with sqlite3.connect(target) as output:source.backup(output)
@@ -39,6 +41,7 @@ def migrate(c):
         'cafe_tables': [('display_number', 'INTEGER'), ('title', "TEXT NOT NULL DEFAULT ''"),
                         ('capacity', 'INTEGER NOT NULL DEFAULT 4'), ('revision', 'INTEGER NOT NULL DEFAULT 0')],
         'orders': [('table_number_snapshot', 'INTEGER')],
+        'telegram_inbox': [('delivery_error',"TEXT NOT NULL DEFAULT ''"),('delivery_attempts','INTEGER NOT NULL DEFAULT 0'),('retry_at','REAL NOT NULL DEFAULT 0')],
         'attendance': [('shift_id', 'INTEGER REFERENCES employee_shifts(id)'), ('revision', 'INTEGER NOT NULL DEFAULT 0'),
                        ('voided', 'INTEGER NOT NULL DEFAULT 0')],
     }
@@ -457,15 +460,18 @@ def register(server):
                 s.api_error(404, 'تردد یافت نشد')
             if old and old['revision'] != body.revision:
                 s.api_error(409, 'تردد تغییر کرده است')
+            # A repaired in-shift arrival must remain eligible for ordinary checkout.
+            assigned=next((r for r in c.execute('SELECT * FROM employee_shifts WHERE user_id=? ORDER BY starts_at DESC',(body.user_id,)) if stamp(r['starts_at'])<=dt<=stamp(r['ends_at'])),None)
+            shift_id=assigned['id'] if assigned and not body.voided else None
             if old:
                 eid = old['id']
-                c.execute('UPDATE attendance SET action=?,created_at=?,voided=?,shift_id=NULL,revision=revision+1 WHERE id=?',
-                          (body.action, iso(dt), int(body.voided), eid))
+                c.execute('UPDATE attendance SET action=?,created_at=?,voided=?,shift_id=?,revision=revision+1 WHERE id=?',
+                          (body.action, iso(dt), int(body.voided), shift_id, eid))
             else:
                 if body.voided:
                     s.api_error(422, 'تردد جدید قابل ابطال نیست')
-                eid = c.execute('INSERT INTO attendance(user_id,action,source,created_at) VALUES(?,?,?,?)',
-                                (body.user_id, body.action, 'manager', iso(dt))).lastrowid
+                eid = c.execute('INSERT INTO attendance(user_id,action,source,created_at,shift_id) VALUES(?,?,?,?,?)',
+                                (body.user_id, body.action, 'manager', iso(dt),shift_id)).lastrowid
             expected = 'in'
             for a in c.execute('SELECT * FROM attendance WHERE user_id=? AND voided=0 ORDER BY created_at,id', (body.user_id,)):
                 if a['action'] != expected:
@@ -526,7 +532,7 @@ def register(server):
     @app.get('/api/admin/telegram-inbox')
     def inbox(limit:int=Query(100,ge=1,le=500),offset:int=Query(0,ge=0),user=Depends(admin)):
         with s.db() as c:
-            return [dict(r) for r in c.execute("SELECT bot_id,update_id,event_at,status,response FROM telegram_inbox WHERE status='needs_review' ORDER BY created_at DESC LIMIT ? OFFSET ?",(limit,offset))]
+            return [dict(r) for r in c.execute("SELECT bot_id,update_id,event_at,status,response,delivery_error FROM telegram_inbox WHERE status='needs_review' OR delivered=-1 ORDER BY created_at DESC LIMIT ? OFFSET ?",(limit,offset))]
 
 
 def telegram_message(c, message):

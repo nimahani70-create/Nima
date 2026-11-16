@@ -225,9 +225,10 @@ def test_telegram_network_retry_and_process_restart_do_not_duplicate_punch(clien
     bot.process_update(event,'retry-bot')
     def fail(*args):raise OSError('network unavailable')
     monkeypatch.setattr(bot,'telegram',fail)
-    with pytest.raises(OSError):bot.flush_replies('retry-bot')
+    assert bot.flush_replies('retry-bot')=={'delivered':0,'failed':1}
     bot.process_update(event,'retry-bot')
     monkeypatch.setattr(bot,'telegram',lambda *args:{'ok':True})
+    with server.db() as c:c.execute("UPDATE telegram_inbox SET retry_at=0 WHERE bot_id='retry-bot'")
     bot.flush_replies('retry-bot');bot.flush_replies('retry-bot')
     with server.db() as c:
         assert c.execute('SELECT count(*) FROM attendance WHERE user_id=?',(u['id'],)).fetchone()[0]==1
@@ -398,3 +399,69 @@ def test_inbox_review_requires_reason_and_is_audited_once(client):
 def test_hours_reject_unrepresentable_end_date(client):
     auth(client)
     assert client.get('/api/attendance/hours?end=9999-12-31').status_code==422
+
+
+@pytest.mark.parametrize('existing',[False,True])
+def test_manager_repaired_open_arrival_can_checkout_inside_shift(client,existing):
+    auth(client);u=employee(client);dt=datetime.now(timezone.utc)
+    sh=shift(client,u['id'],(dt-timedelta(hours=2)).isoformat(),(dt+timedelta(hours=1)).isoformat()).json()
+    changes={}
+    if existing:
+        original=server.punch_for_user(u['id'],'in','panel',(dt-timedelta(minutes=30)).isoformat())
+        changes['event_id']=original['id']
+    r=correction(client,u['id'],'in',(dt-timedelta(hours=1)).isoformat(),**changes)
+    assert r.status_code==200 and r.json()['shift_id']==sh['id']
+    signin(client,'worker')
+    assert client.post('/api/attendance/punch',json={'action':'out'}).status_code==200
+
+
+@pytest.mark.parametrize('permanent',[False,True])
+def test_reply_failure_does_not_block_other_recipients(client,monkeypatch,permanent):
+    import urllib.error
+    auth(client)
+    with server.db() as c:
+        for i in (1,2):
+            c.execute("INSERT INTO telegram_inbox(bot_id,update_id,status,response,chat_id,created_at) VALUES('delivery-bot',?,'processed','test-only-reply',?,?)",(i,str(i),server.now()))
+    sent=[]
+    def sender(method,values):
+        sent.append(values['chat_id'])
+        if values['chat_id']=='1':
+            if permanent:raise urllib.error.HTTPError('https://example.invalid/redacted',403,'blocked',None,None)
+            raise OSError('synthetic network failure')
+        return {'ok':True}
+    monkeypatch.setattr(bot,'telegram',sender)
+    assert bot.flush_replies('delivery-bot')=={'delivered':1,'failed':1}
+    assert sent==['1','2']
+    with server.db() as c:
+        first=c.execute("SELECT * FROM telegram_inbox WHERE bot_id='delivery-bot' AND update_id=1").fetchone()
+        assert first['delivered']==(-1 if permanent else 0)
+        assert first['delivery_attempts']==1
+        assert first['retry_at']>time.time()
+        assert 'https://' not in first['delivery_error']
+        assert c.execute("SELECT delivered FROM telegram_inbox WHERE bot_id='delivery-bot' AND update_id=2").fetchone()[0]==1
+    assert bot.flush_replies('delivery-bot')=={'delivered':0,'failed':0}
+
+
+def test_telegram_retry_after_response_is_persistent(client,monkeypatch):
+    auth(client)
+    with server.db() as c:c.execute("INSERT INTO telegram_inbox(bot_id,update_id,status,response,chat_id,created_at) VALUES('rate-bot',1,'processed','test-only-reply','1',?)",(server.now(),))
+    monkeypatch.setattr(bot,'telegram',lambda *args:{'ok':False,'error_code':429,'parameters':{'retry_after':120}})
+    assert bot.flush_replies('rate-bot')=={'delivered':0,'failed':1}
+    with server.db() as c:
+        row=c.execute("SELECT * FROM telegram_inbox WHERE bot_id='rate-bot'").fetchone()
+        assert row['delivered']==0 and row['retry_at']>=time.time()+115
+
+
+def test_earlier_v150_candidate_delivery_migration_is_backed_up(client):
+    with server.db() as c:
+        for column in ('delivery_error','delivery_attempts','retry_at'):
+            c.execute('ALTER TABLE telegram_inbox DROP COLUMN '+column)
+    server.init_db()
+    backups=list((server.DB_PATH.parent/'backups').glob('before-workforce-v4-*.sqlite3'))
+    assert len(backups)==1
+    with sqlite3.connect(backups[0]) as c:
+        assert 'retry_at' not in {r[1] for r in c.execute('PRAGMA table_info(telegram_inbox)')}
+    with server.db() as c:
+        assert {'retry_at','delivery_error','delivery_attempts'}<={r['name'] for r in c.execute('PRAGMA table_info(telegram_inbox)')}
+    server.init_db()
+    assert len(list((server.DB_PATH.parent/'backups').glob('before-workforce-v4-*.sqlite3')))==1

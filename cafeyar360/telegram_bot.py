@@ -41,16 +41,46 @@ def process_update(update,bot_id):
 
 
 def flush_replies(bot_id):
-    # At-least-once replies are safe; attendance itself is exactly once per update.
+    # Per-recipient failures must never block later replies. Attendance is already committed.
     with db() as c:
-        rows=c.execute('SELECT * FROM telegram_inbox WHERE bot_id=? AND delivered=0 ORDER BY update_id LIMIT 100',(bot_id,)).fetchall()
+        rows=c.execute('SELECT * FROM telegram_inbox WHERE bot_id=? AND delivered=0 AND retry_at<=? ORDER BY update_id LIMIT 100',(bot_id,time.time())).fetchall()
+    totals={'delivered':0,'failed':0}
     for row in rows:
-        if row['response']:
-            result=telegram('sendMessage',{'chat_id':row['chat_id'],'text':row['response']})
-            if not result or not result.get('ok'):
-                raise ValueError('Telegram reply not acknowledged')
+        code=None
+        retry_after=0
+        failed=False
+        try:
+            if row['response']:
+                result=telegram('sendMessage',{'chat_id':row['chat_id'],'text':row['response']})
+                if not isinstance(result,dict) or not result.get('ok'):
+                    failed=True
+                    code=result.get('error_code') if isinstance(result,dict) else None
+                    retry_after=(result.get('parameters') or {}).get('retry_after',0) if isinstance(result,dict) else 0
+        except urllib.error.HTTPError as exc:
+            failed=True
+            code=exc.code
+            try:
+                payload=json.loads(exc.read())
+                retry_after=(payload.get('parameters') or {}).get('retry_after',0)
+            except (ValueError,TypeError,OSError,AttributeError):pass
+        except (urllib.error.URLError,OSError,TimeoutError,ValueError,TypeError):
+            failed=True
+        if failed:
+            # 400/403/404: malformed destination or blocked recipient. Never retain URLs/descriptions.
+            permanent=code in (400,403,404)
+            attempts=row['delivery_attempts']+1
+            try:delay=max(1,min(3600,int(retry_after)))
+            except (TypeError,ValueError,OverflowError):delay=0
+            delay=max(delay,min(300,2**min(attempts,8)))
+            with db() as c:
+                c.execute('UPDATE telegram_inbox SET delivered=?,delivery_error=?,delivery_attempts=?,retry_at=? WHERE bot_id=? AND update_id=? AND delivered=0',
+                          (-1 if permanent else 0,('permanent_http_' if permanent else 'retryable_')+(str(code) if isinstance(code,int) else 'network'),attempts,time.time()+delay,bot_id,row['update_id']))
+            totals['failed']+=1
+            continue
         with db() as c:
-            c.execute('UPDATE telegram_inbox SET delivered=1 WHERE bot_id=? AND update_id=?',(bot_id,row['update_id']))
+            c.execute("UPDATE telegram_inbox SET delivered=1,delivery_error='',delivery_attempts=delivery_attempts+1,retry_at=0 WHERE bot_id=? AND update_id=? AND delivered=0",(bot_id,row['update_id']))
+        totals['delivered']+=1
+    return totals
 
 
 def durable_offset(bot_id):

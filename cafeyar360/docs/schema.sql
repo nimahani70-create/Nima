@@ -36,7 +36,7 @@ CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REF
 CREATE TABLE table_numbers(number INTEGER PRIMARY KEY, table_id INTEGER NOT NULL REFERENCES cafe_tables(number));
 CREATE TABLE telegram_inbox(bot_id TEXT NOT NULL, update_id INTEGER NOT NULL, sender_id TEXT,
            event_at TEXT, status TEXT NOT NULL, response TEXT, chat_id TEXT, delivered INTEGER NOT NULL DEFAULT 0,
-           created_at TEXT NOT NULL, PRIMARY KEY(bot_id,update_id));
+           created_at TEXT NOT NULL, delivery_error TEXT NOT NULL DEFAULT '', delivery_attempts INTEGER NOT NULL DEFAULT 0, retry_at REAL NOT NULL DEFAULT 0, PRIMARY KEY(bot_id,update_id));
 CREATE TABLE telegram_links (code TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), expires REAL NOT NULL);
 CREATE TABLE telegram_offsets(bot_id TEXT PRIMARY KEY, next_offset INTEGER NOT NULL);
 CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, telegram_user_id TEXT UNIQUE, active INTEGER NOT NULL DEFAULT 1, revision INTEGER NOT NULL DEFAULT 0);
