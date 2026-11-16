@@ -138,6 +138,7 @@ def test_tables_keep_identity_old_qr_and_historical_order_number(client):
     assert r.status_code==200 and r.json()['id']==3
     assert client.get('/api/qr/3').status_code==200
     assert client.get('/api/qr/33').status_code==200
+    assert client.get('/api/public/tables/3').json()['number']==33
     order=new_order(client,key='old-printed-qr')  # number 3 still resolves to same physical table
     rows=client.get('/api/orders').json()
     assert next(x for x in rows if x['id']==before['id'])['table_num']==3
@@ -152,6 +153,7 @@ def test_tables_keep_identity_old_qr_and_historical_order_number(client):
     assert client.post('/api/orders',json=body).status_code==422
     assert client.post('/api/orders',json={**body,'table':33}).status_code==422
     assert client.get('/api/qr/3').status_code==404
+    assert client.get('/api/public/tables/3').status_code==404
     assert client.get('/api/orders/'+before['code']+'/status?token='+before['token']).json()['table_num']==3
     # A successful old request can be safely retried even after table deactivation.
     assert new_order(client,key='old-printed-qr')['duplicate']

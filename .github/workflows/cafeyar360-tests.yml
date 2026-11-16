@@ -83,7 +83,7 @@ jobs:
                           break
                       except OSError:time.sleep(.5)
                   else:raise RuntimeError('Test server not ready')
-                  for script in ('tests/browser-smoke.cjs','tests/browser-finance.cjs'):
+                  for script in ('tests/browser-smoke.cjs','tests/browser-finance.cjs','tests/browser-workforce.cjs'):
                       subprocess.run(['node',script],env=env,check=True)
                       results.append({'script':script,'result':'passed'})
               finally:
@@ -91,7 +91,7 @@ jobs:
                   process.wait(timeout=10)
                   target=pathlib.Path('test-artifacts/browser-results.json')
                   target.parent.mkdir(exist_ok=True)
-                  target.write_text(json.dumps({'completed':results,'expected':2},indent=2))
+                  target.write_text(json.dumps({'completed':results,'expected':3},indent=2))
           PY
       - uses: actions/upload-artifact@v4
         if: always()
@@ -101,4 +101,5 @@ jobs:
             cafeyar360/test-artifacts/browser-results.json
             cafeyar360/test-artifacts/*.png
             cafeyar360/test-artifacts/*.pdf
+            cafeyar360/test-artifacts/sprint3-browser-results.json
           if-no-files-found: warn

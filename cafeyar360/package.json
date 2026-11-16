@@ -1,6 +1,11 @@
 {
   "name": "cafeyar360-browser-checks",
   "private": true,
-  "scripts": {"test:browser": "node tests/browser-smoke.cjs"},
-  "devDependencies": {"playwright": "1.62.1"}
+  "scripts": {
+    "test:browser": "node tests/browser-smoke.cjs"
+  },
+  "devDependencies": {
+    "jsqr": "1.4.0",
+    "playwright": "1.62.1"
+  }
 }

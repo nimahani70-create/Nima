@@ -1,0 +1,58 @@
+// Real QR pixels -> decoded URL -> customer order -> employee queue. No live Telegram.
+const fs=require('node:fs');
+const {chromium}=require('playwright');
+const jsQR=require('jsqr');
+const BASE=process.env.CAFE_TEST_BASE_URL||'http://127.0.0.1:8010';
+const adminPassword=process.env.CAFE_PASSWORD_ADMIN;
+if(!adminPassword||adminPassword.length<12)throw Error('Disposable admin credential required');
+(async()=>{
+ const browser=await chromium.launch({headless:true,executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH});
+ const ctx=await browser.newContext();const page=await ctx.newPage();const errors=[];
+ page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(BASE+'/employees');await page.waitForSelector('#login-dialog[open]');
+ await page.locator('[data-login="admin"]').click();await page.locator('#login-form [name=password]').fill(adminPassword);await page.locator('#login-form button[type=submit]').click();
+ await page.waitForSelector('[data-form=employee]');
+ const username='browserworker'+Date.now(),password=require('node:crypto').randomBytes(24).toString('hex');
+ const form=page.locator('[data-form=employee]');
+ await form.locator('[name=name]').fill('کارمند مرورگر');await form.locator('[name=username]').fill(username);
+ await form.locator('[name=role]').selectOption('barista');await form.locator('[name=password]').fill(password);await form.locator('[name=reason]').fill('تعریف کارمند برای آزمون مرورگر');
+ const employeeResponse=page.waitForResponse(r=>r.url().endsWith('/api/admin/employees')&&r.request().method()==='POST');
+ await form.locator('button[type=submit]').click();const er=await employeeResponse;if(er.status()!==201)throw Error('Employee creation failed');const employee=await er.json();
+ await page.waitForSelector(`[data-work=edit-employee][data-id="${employee.id}"]`);
+ await page.goto(BASE+'/attendance');await page.waitForSelector('[data-form=employee-shift]');
+ const tehranLocal=ms=>new Date(ms+3.5*3600000).toISOString().slice(0,16);
+ const sf=page.locator('[data-form=employee-shift]');await sf.locator('[name=user_id]').selectOption(String(employee.id));
+ await sf.locator('[name=starts_at]').fill(tehranLocal(Date.now()-2*3600000));await sf.locator('[name=ends_at]').fill(tehranLocal(Date.now()+2*3600000));await sf.locator('[name=reason]').fill('شیفت آزمون مرورگر');
+ const shiftResponse=page.waitForResponse(r=>r.url().endsWith('/api/admin/employee-shifts')&&r.request().method()==='POST');await sf.locator('button').click();if((await shiftResponse).status()!==201)throw Error('Shift creation failed');
+ await page.goto(BASE+'/tables');await page.waitForSelector('[data-form=table]');
+ const tf=page.locator('[data-form=table]');await tf.locator('[name=number]').fill('91');await tf.locator('[name=title]').fill('میز مرورگر');await tf.locator('[name=capacity]').fill('6');await tf.locator('[name=reason]').fill('میز آزمون QR');
+ const tableResponse=page.waitForResponse(r=>r.url().endsWith('/api/admin/tables')&&r.request().method()==='POST');await tf.locator('button[type=submit]').click();if((await tableResponse).status()!==201)throw Error('Table creation failed');
+ await page.waitForSelector('a[href="/tables/91/print"]');
+ const popupEvent=page.waitForEvent('popup');await page.locator('a[href="/tables/91/print"]').click();const print=await popupEvent;
+ await print.waitForSelector('img');await print.waitForFunction(()=>document.querySelector('img').naturalWidth>0);
+ const pixels=await print.locator('img').evaluate(img=>{const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;const cx=c.getContext('2d');cx.drawImage(img,0,0);return {data:Array.from(cx.getImageData(0,0,c.width,c.height).data),width:c.width,height:c.height}});
+ const qr=jsQR(new Uint8ClampedArray(pixels.data),pixels.width,pixels.height);if(!qr||new URL(qr.data).searchParams.get('table')!=='91')throw Error('QR decode failed');
+ fs.mkdirSync('test-artifacts',{recursive:true});await print.pdf({path:'test-artifacts/sprint3-table-qr.pdf',format:'A4'});await print.close();
+ // A printed QR must keep identifying this physical table after renumbering.
+ await page.goto(BASE+'/tables');await page.waitForSelector('[data-work=edit-table][data-id="91"]');await page.locator('[data-work=edit-table][data-id="91"]').click();await page.waitForFunction(()=>document.querySelector('[data-form=table] [name=number]').value==='91');await page.locator('[data-form=table] [name=number]').fill('92');await page.locator('[data-form=table] [name=reason]').fill('تغییر شماره بدون تعویض QR چاپ‌شده');
+ const renumber=page.waitForResponse(r=>r.url().endsWith('/api/admin/tables/91')&&r.request().method()==='PUT');await page.locator('[data-form=table] button[type=submit]').click();const renamed=await renumber;if(renamed.status()!==200||(await renamed.json()).number!==92)throw Error('Table renumber failed');
+ const customer=await browser.newContext({viewport:{width:390,height:844},isMobile:true});const menu=await customer.newPage();menu.on('pageerror',e=>errors.push(e.message));
+ await menu.goto(qr.data);await menu.waitForSelector('.product-card');await menu.locator('[data-action=add]').first().click();await menu.locator('[data-action=open-cart]').click();
+ await menu.locator('[data-form=order] [name=allergy]').fill('حساسیت به شیر');
+ const orderEvent=menu.waitForResponse(r=>r.url().endsWith('/api/orders')&&r.request().method()==='POST');await menu.locator('[data-form=order] button[type=submit]').click();const order=await (await orderEvent).json();await menu.waitForSelector('.success-box');
+ if(await menu.evaluate(()=>document.documentElement.scrollWidth>innerWidth))throw Error('Customer mobile overflow');
+ const worker=await browser.newContext();const staff=await worker.newPage();staff.on('pageerror',e=>errors.push(e.message));
+ await staff.goto(BASE+'/staff');await staff.waitForSelector('#login-dialog[open]');await staff.locator('#login-form [name=username]').fill(username);await staff.locator('#login-form [name=password]').fill(password);await staff.locator('#login-form button[type=submit]').click();
+ const card=staff.locator('.order-card').filter({hasText:order.code});await card.waitFor();const txt=await card.innerText();if(!txt.includes('۹۲')||!txt.includes('حساسیت به شیر'))throw Error('Wrong table/allergy in staff queue: '+txt);
+ if((await worker.request.get(BASE+'/api/finance')).status()!==403)throw Error('Worker finance access');
+ staff.on('dialog',d=>d.accept());const accepted=staff.waitForResponse(r=>r.url().endsWith('/status')&&r.request().method()==='PATCH');await card.locator('[data-status=accepted]').click();if((await accepted).status()!==200)throw Error('Barista cannot accept');
+ await staff.goto(BASE+'/attendance');await staff.waitForSelector('[data-action=punch]');
+ for(const action of ['in','out']){const event=staff.waitForResponse(r=>r.url().endsWith('/api/attendance/punch'));await staff.locator(`[data-action=punch][data-type=${action}]`).click();if((await event).status()!==200)throw Error('Panel punch failed');await staff.waitForSelector('[data-action=punch]');}
+ await page.goto(BASE+'/attendance');await page.waitForSelector(`[data-hours-user="${employee.id}"]`);if(!(await page.locator(`[data-hours-user="${employee.id}"]`).innerText()).includes('ساعت'))throw Error('Hours report absent');
+ await page.setViewportSize({width:390,height:844});if(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth))throw Error('Attendance mobile overflow');await page.screenshot({path:'test-artifacts/sprint3-attendance-mobile.png',fullPage:true});
+ await page.goto(BASE+'/employees');await page.waitForSelector(`[data-work=edit-employee][data-id="${employee.id}"]`);await page.locator(`[data-work=edit-employee][data-id="${employee.id}"]`).click();await page.waitForFunction(name=>document.querySelector('[data-form=employee] [name=username]').value===name,username);await page.locator('[data-form=employee] [name=active]').uncheck();await page.locator('[data-form=employee] [name=reason]').fill('غیرفعال‌سازی آزمون');
+ const disabled=page.waitForResponse(r=>r.url().endsWith('/api/admin/employees/'+employee.id)&&r.request().method()==='PUT');await page.locator('[data-form=employee] button[type=submit]').click();if((await disabled).status()!==200)throw Error('Disable failed');
+ if((await worker.request.get(BASE+'/api/auth/me')).status()!==401)throw Error('Disabled employee session survived');
+ const result={employeeCreation:true,rolePermissions:true,employeeShift:true,tableCreation:true,qrDecoded:true,qrPrinted:true,oldQrAfterRenumber:true,qrOrderStaffTable:true,allergyVisible:true,panelInOut:true,hoursReport:true,disableRevokesSession:true,mobileOverflow:false,pageErrors:errors,realTelegramTested:false};
+ fs.writeFileSync('test-artifacts/sprint3-browser-results.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));await browser.close();if(errors.length)process.exitCode=1;
+})().catch(e=>{console.error(e.stack);process.exit(1)});

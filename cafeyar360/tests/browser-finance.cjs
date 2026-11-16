@@ -14,7 +14,8 @@ if(Object.values(testPasswords).some(x=>!x||x.length<12))throw Error('Set dispos
  if(await page.locator('[data-form="open-shift"]').count()){await page.locator('[data-form="open-shift"] input').fill('1000');await page.locator('[data-form="open-shift"] button').click();await page.waitForSelector('[data-form="close-shift"]')}
  const orderRes=await ctx.request.post(BASE+'/api/orders',{data:{items:[{product_id:2,qty:1}],fulfillment:'takeaway',payment_method:'cash',idempotency_key:'browser-finance-'+Date.now()}});
  if(orderRes.status()!==201)throw Error('create order failed');const order=await orderRes.json();
- await ctx.request.post(`${BASE}/api/orders/${order.id}/pay`,{data:{method:'cash'}});
+ const csrf=(await (await ctx.request.get(BASE+'/api/auth/me')).json()).csrf_token;
+ await ctx.request.post(`${BASE}/api/orders/${order.id}/pay`,{data:{method:'cash'},headers:{'X-CSRF-Token':csrf}});
  let receipt=await (await ctx.request.get(`${BASE}/api/orders/${order.id}/receipt`)).json();
  await page.reload();await page.waitForSelector(`[data-action="payment-correction"][data-oid="${order.id}"]`);
  page.on('dialog',async d=>{
