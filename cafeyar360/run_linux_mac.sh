@@ -5,4 +5,5 @@ cd "$(dirname "$0")"
 . .venv/bin/activate
 python -m pip install -r requirements-lock.txt
 export DEMO_MODE="${DEMO_MODE:-1}"
+python manage.py init
 python -m uvicorn app:app --host 0.0.0.0 --port 8000

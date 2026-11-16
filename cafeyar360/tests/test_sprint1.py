@@ -6,11 +6,13 @@ from fastapi.testclient import TestClient
 import app as server
 import manage
 from test_flow import client, auth, new_order
+from conftest import TEST_PASSWORDS
 
 
 def test_operational_bootstrap_requires_passwords_and_has_no_sample_data(tmp_path, monkeypatch):
     monkeypatch.setattr(server,'DB_PATH',tmp_path/'clean.sqlite3')
     monkeypatch.setattr(server,'DEMO_MODE',False)
+    for name in ('ADMIN','CASHIER','BARISTA'):monkeypatch.delenv('CAFE_PASSWORD_'+name,raising=False)
     with pytest.raises(RuntimeError,match='CAFE_PASSWORD_ADMIN'):
         server.init_db()
     for who in ('ADMIN','CASHIER','BARISTA'):
@@ -28,6 +30,7 @@ def test_operational_bootstrap_requires_passwords_and_has_no_sample_data(tmp_pat
 
 def test_legacy_password_rotation_revokes_session(client,monkeypatch):
     auth(client)
+    with server.db() as db:db.execute('UPDATE users SET password_hash=? WHERE username=?',(server.hpass('123456'),'admin'))
     monkeypatch.setattr(server,'DEMO_MODE',False)
     with pytest.raises(RuntimeError,match='Unsafe demo password'):
         server.init_db()
@@ -91,7 +94,7 @@ def test_attendance_permissions_and_initial_out(client):
     auth(client)
     assert client.post('/api/attendance/punch',json={'action':'in'}).status_code==200
     client.post('/api/auth/logout')
-    auth(client,'barista','345678')
+    auth(client,'barista')
     assert client.post('/api/attendance/punch',json={'action':'out'}).status_code==409
     rows=client.get('/api/attendance').json()
     assert [u['username'] for u in rows['users']]==['barista']
@@ -146,7 +149,7 @@ def test_database_errors_and_non_finite_numbers_are_controlled(client):
 
 def test_secure_cookie_and_no_customer_token_in_staff_list(client,monkeypatch):
     monkeypatch.setattr(server,'COOKIE_SECURE',True)
-    response=client.post('/api/auth/login',json={'username':'admin','password':'123456'})
+    response=client.post('/api/auth/login',json={'username':'admin','password':TEST_PASSWORDS['admin']})
     assert 'Secure' in response.headers['set-cookie'].split('; ')
     client.cookies.clear()
     monkeypatch.setattr(server,'COOKIE_SECURE',False)
@@ -172,3 +175,66 @@ def test_upgrade_legacy_schema_freezes_pending_orders_once(client):
     server.init_db()
     with server.db() as c:
         assert c.execute('SELECT COUNT(*) FROM order_materials WHERE order_id=?',(order['id'],)).fetchone()[0]==2
+
+
+@pytest.mark.parametrize('demo',[True,False])
+def test_no_runtime_bootstrap_password_fallback(tmp_path,monkeypatch,demo):
+    monkeypatch.setattr(server,'DB_PATH',tmp_path/'no-default.sqlite3')
+    monkeypatch.setattr(server,'DEMO_MODE',demo)
+    for name in ('ADMIN','CASHIER','BARISTA'):monkeypatch.delenv('CAFE_PASSWORD_'+name,raising=False)
+    with pytest.raises(RuntimeError,match='CAFE_PASSWORD_ADMIN'):server.init_db()
+    with server.db() as c:assert c.execute('SELECT COUNT(*) FROM users').fetchone()[0]==0
+
+
+def test_local_setup_reads_passwords_hidden_and_does_not_write_them(tmp_path,monkeypatch,capsys):
+    from types import SimpleNamespace
+    monkeypatch.setattr(server,'DB_PATH',tmp_path/'local.sqlite3')
+    for name in ('ADMIN','CASHIER','BARISTA'):monkeypatch.delenv('CAFE_PASSWORD_'+name,raising=False)
+    monkeypatch.setattr(manage.sys,'stdin',SimpleNamespace(isatty=lambda:True))
+    values=iter([p for name in ('admin','cashier','barista') for p in (TEST_PASSWORDS[name],TEST_PASSWORDS[name])])
+    monkeypatch.setattr(manage.getpass,'getpass',lambda prompt:next(values))
+    manage.initialize()
+    with server.db() as c:
+        for row in c.execute('SELECT username,password_hash FROM users'):
+            assert server.verify(TEST_PASSWORDS[row['username']],row['password_hash'])
+        assert c.execute('SELECT COUNT(*) FROM products').fetchone()[0]==10
+    assert not list(tmp_path.glob('*.env'))
+    captured=capsys.readouterr()
+    assert all(p not in captured.out+captured.err for p in TEST_PASSWORDS.values())
+
+
+def test_noninteractive_setup_fails_without_credentials_and_without_creating_database(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    path=tmp_path/'not-created.sqlite3';monkeypatch.setattr(server,'DB_PATH',path)
+    for name in ('ADMIN','CASHIER','BARISTA'):monkeypatch.delenv('CAFE_PASSWORD_'+name,raising=False)
+    monkeypatch.setattr(manage.sys,'stdin',SimpleNamespace(isatty=lambda:False))
+    with pytest.raises(ValueError,match='Non-interactive'):manage.initialize()
+    assert not path.exists()
+
+
+def test_password_rotation_makes_recoverable_backup_before_revocation(client):
+    auth(client)
+    manage.change_password('admin','test-only-new-local-password')
+    snapshots=list((server.DB_PATH.parent/'backups').glob('before-password-*.sqlite3'))
+    assert len(snapshots)==1
+    with sqlite3.connect(snapshots[0]) as old:
+        previous=old.execute("SELECT password_hash FROM users WHERE username='admin'").fetchone()[0]
+        assert server.verify(TEST_PASSWORDS['admin'],previous)
+        assert old.execute('SELECT COUNT(*) FROM sessions').fetchone()[0]==1
+        assert old.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+    assert client.get('/api/auth/me').status_code==401
+    auth(client,password='test-only-new-local-password')
+
+
+def test_legacy_public_password_rejected_even_in_demo_mode(client):
+    with server.db() as c:c.execute("UPDATE users SET password_hash=? WHERE username='admin'",(server.hpass('123456'),))
+    with pytest.raises(RuntimeError,match='Unsafe demo password'):manage.initialize()
+    assert list((server.DB_PATH.parent/'backups').glob('before-init-*.sqlite3'))
+
+
+def test_demo_shortcuts_never_embed_passwords():
+    js=(server.ROOT/'static/app.js').read_text(encoding='utf-8')
+    assert "const DEMO_USERS={admin:'admin',cashier:'cashier',barista:'barista'}" in js
+    assert "querySelector('[name=password]').value=''" in js
+    for old in ('admin / 123456','cashier / 234567','barista / 345678'):
+        assert old not in js

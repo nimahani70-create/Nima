@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 import app as server
 import telegram_bot as bot
+from conftest import TEST_PASSWORDS
 
 
 @pytest.fixture
@@ -16,7 +17,7 @@ def client(tmp_path, monkeypatch):
 
 
 def login(c):
-    response=c.post('/api/auth/login', json={'username':'barista','password':'345678'})
+    response=c.post('/api/auth/login', json={'username':'barista','password':TEST_PASSWORDS['barista']})
     assert response.status_code==200
 
 

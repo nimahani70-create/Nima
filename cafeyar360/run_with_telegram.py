@@ -7,8 +7,14 @@ import subprocess
 import sys
 import time
 
+# app captures DEMO_MODE during import via manage. Set the launcher default first.
+os.environ.setdefault('DEMO_MODE','1')
+
+from manage import initialize
+
 
 def main():
+    initialize()
     env=os.environ.copy()
     token=env.get('TELEGRAM_BOT_TOKEN')
     if not token:

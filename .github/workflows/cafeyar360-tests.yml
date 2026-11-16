@@ -1,0 +1,104 @@
+name: Cafe Yar 360 tests
+on:
+  push:
+    branches: [main, 'feature/sprint-*']
+    paths:
+      - 'cafeyar360/**'
+      - '.github/workflows/cafeyar360-tests.yml'
+  pull_request:
+    paths:
+      - 'cafeyar360/**'
+      - '.github/workflows/cafeyar360-tests.yml'
+permissions:
+  contents: read
+concurrency:
+  group: cafe-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  unit:
+    name: Python ${{ matrix.python }} on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.12']
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: cafeyar360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -r requirements-lock.txt
+      - run: python -m pytest -q --junitxml=pytest-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cafe-unit-${{ matrix.os }}-${{ matrix.python }}
+          path: cafeyar360/pytest-results.xml
+          if-no-files-found: warn
+  browser:
+    name: Chromium integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cafeyar360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: cafeyar360/package-lock.json
+      - run: python -m pip install -r requirements-lock.txt
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Run with isolated database and ephemeral test credentials
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, secrets, subprocess, sys, tempfile, time, urllib.request
+          env=os.environ.copy()
+          for who in ('ADMIN','CASHIER','BARISTA'):
+              value=secrets.token_urlsafe(24)
+              print('::add-mask::'+value,flush=True)
+              env['CAFE_PASSWORD_'+who]=value
+          env['DEMO_MODE']='1'
+          results=[]
+          with tempfile.TemporaryDirectory() as work:
+              env['CAFE_DB_PATH']=str(pathlib.Path(work)/'cafe_nima.sqlite3')
+              subprocess.run([sys.executable,'manage.py','init'],env=env,check=True)
+              process=subprocess.Popen([sys.executable,'-m','uvicorn','app:app','--host','127.0.0.1','--port','8010','--no-access-log'],env=env)
+              try:
+                  for attempt in range(60):
+                      if process.poll() is not None:raise RuntimeError('Test server exited')
+                      try:
+                          urllib.request.urlopen('http://127.0.0.1:8010/api/demo/health',timeout=1).close()
+                          break
+                      except OSError:time.sleep(.5)
+                  else:raise RuntimeError('Test server not ready')
+                  for script in ('tests/browser-smoke.cjs','tests/browser-finance.cjs'):
+                      subprocess.run(['node',script],env=env,check=True)
+                      results.append({'script':script,'result':'passed'})
+              finally:
+                  process.terminate()
+                  process.wait(timeout=10)
+                  target=pathlib.Path('test-artifacts/browser-results.json')
+                  target.parent.mkdir(exist_ok=True)
+                  target.write_text(json.dumps({'completed':results,'expected':2},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cafe-browser-results
+          path: |
+            cafeyar360/test-artifacts/browser-results.json
+            cafeyar360/test-artifacts/*.png
+            cafeyar360/test-artifacts/*.pdf
+          if-no-files-found: warn

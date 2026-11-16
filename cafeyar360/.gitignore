@@ -29,3 +29,7 @@ htmlcov/
 # Optional browser tooling and artifacts
 node_modules/
 test-artifacts/
+
+# Local recovery snapshots and test reports
+backups/
+pytest-results.xml
