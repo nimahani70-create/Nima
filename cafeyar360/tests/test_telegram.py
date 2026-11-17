@@ -13,12 +13,16 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(bot, 'db', server.db)
     monkeypatch.setattr(bot, 'init_db', server.init_db)
     with TestClient(server.app) as client:
+        from datetime import datetime,timedelta,timezone
+        with server.db() as db:
+            db.execute('INSERT INTO employee_shifts(user_id,starts_at,ends_at,actor_id) VALUES(?,?,?,1)',(3,(datetime.now(timezone.utc)-timedelta(hours=12)).isoformat(),(datetime.now(timezone.utc)+timedelta(hours=12)).isoformat()))
         yield client
 
 
 def login(c):
     response=c.post('/api/auth/login', json={'username':'barista','password':TEST_PASSWORDS['barista']})
     assert response.status_code==200
+    c.headers['X-CSRF-Token']=response.json()['csrf_token']
 
 
 def test_link_private_chat_and_telegram_attendance(client, monkeypatch):
@@ -29,7 +33,7 @@ def test_link_private_chat_and_telegram_attendance(client, monkeypatch):
     assert response.status_code==200
     code=response.json()['code']
     def msg(command,kind='private'):
-        bot.dispatch({'from':{'id':715551},'chat':{'id':715551,'type':kind},'text':command})
+        bot.dispatch({'from':{'id':715551},'chat':{'id':715551,'type':kind},'text':command,'date':int(time.time())})
     msg('/link '+code, 'group')
     assert output==[]
     msg('/link '+code)

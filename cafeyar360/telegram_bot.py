@@ -10,7 +10,8 @@ import urllib.parse
 import urllib.request
 import urllib.error
 
-from app import init_db, db, punch_for_user
+from app import init_db, db
+import workforce
 
 TOKEN=os.getenv('TELEGRAM_BOT_TOKEN','')
 
@@ -26,47 +27,66 @@ def telegram(method, values):
 
 
 def dispatch(message):
-    # Attendance and one-time linking are permitted only in private chats.
-    if message.get('chat',{}).get('type')!='private':
-        return
-    sender=message.get('from',{}).get('id')
-    chat=message.get('chat',{}).get('id')
-    cmd=message.get('text','').strip().split()
-    if not sender or not chat or not cmd:return
-    action=cmd[0].split('@')[0].lower()
-    if action=='/start':
-        response='ربات حضور و غیاب کافه یار ۳۶۰. ابتدا کد اتصال پنل را با /link CODE وارد کنید. سپس /in یا /out را ارسال کنید.'
-    elif action=='/link':
-        if len(cmd)!=2:response='کد را به صورت /link CODE وارد کنید.'
-        else:
-            with db() as c:
-                c.execute('BEGIN IMMEDIATE')
-                row=c.execute('SELECT user_id FROM telegram_links WHERE code=? AND expires>?',(cmd[1].upper(),time.time())).fetchone()
-                if row:
-                    used=c.execute('SELECT id FROM users WHERE telegram_user_id=? AND id<>?',(str(sender),row['user_id'])).fetchone()
-                    if used:response='این حساب تلگرام قبلاً به کاربر دیگری متصل شده است.'
-                    else:
-                        c.execute('UPDATE users SET telegram_user_id=? WHERE id=?',(str(sender),row['user_id']))
-                        c.execute('DELETE FROM telegram_links WHERE code=?',(cmd[1].upper(),))
-                        response='حساب تلگرام متصل شد. دستورهای /in و /out فعال هستند.'
-                    c.execute('COMMIT')
-                else:response='کد اتصال نامعتبر یا منقضی شده است.'
-    elif action in ('/in','/out','/status'):
-        with db() as c:
-            user=c.execute('SELECT id,name FROM users WHERE telegram_user_id=?',(str(sender),)).fetchone()
-        if not user:response='ابتدا از پنل حضور و غیاب، کد اتصال دریافت و /link CODE را ارسال کنید.'
-        elif action=='/status':
-            with db() as c:
-                row=c.execute('SELECT action,created_at FROM attendance WHERE user_id=? ORDER BY id DESC LIMIT 1',(user['id'],)).fetchone()
-            response='آخرین ثبت: '+(('ورود' if row['action']=='in' else 'خروج')+' | '+row['created_at'] if row else 'هیچ ترددی ثبت نشده')
-        else:
+    """Compatibility helper for direct message tests; polling uses durable process_update."""
+    with db() as c:
+        c.execute('BEGIN IMMEDIATE')
+        response,_=workforce.telegram_message(c,message)
+        c.execute('COMMIT')
+    if response:
+        telegram('sendMessage',{'chat_id':message['chat']['id'],'text':response})
+
+
+def process_update(update,bot_id):
+    return workforce.telegram_update(bot_id,update)
+
+
+def flush_replies(bot_id):
+    # Per-recipient failures must never block later replies. Attendance is already committed.
+    with db() as c:
+        rows=c.execute('SELECT * FROM telegram_inbox WHERE bot_id=? AND delivered=0 AND retry_at<=? ORDER BY update_id LIMIT 100',(bot_id,time.time())).fetchall()
+    totals={'delivered':0,'failed':0}
+    for row in rows:
+        code=None
+        retry_after=0
+        failed=False
+        try:
+            if row['response']:
+                result=telegram('sendMessage',{'chat_id':row['chat_id'],'text':row['response']})
+                if not isinstance(result,dict) or not result.get('ok'):
+                    failed=True
+                    code=result.get('error_code') if isinstance(result,dict) else None
+                    retry_after=(result.get('parameters') or {}).get('retry_after',0) if isinstance(result,dict) else 0
+        except urllib.error.HTTPError as exc:
+            failed=True
+            code=exc.code
             try:
-                item=punch_for_user(user['id'],'in' if action=='/in' else 'out','telegram')
-                response=('ورود' if action=='/in' else 'خروج')+' شما در کافه یار ۳۶۰ ثبت شد. '+item['created_at']
-            except Exception as exc:
-                response='ثبت انجام نشد: '+getattr(exc,'detail','خطای داخلی')
-    else:response='دستورهای معتبر: /start، /link CODE، /in، /out، /status'
-    telegram('sendMessage',{'chat_id':chat,'text':response})
+                payload=json.loads(exc.read())
+                retry_after=(payload.get('parameters') or {}).get('retry_after',0)
+            except (ValueError,TypeError,OSError,AttributeError):pass
+        except (urllib.error.URLError,OSError,TimeoutError,ValueError,TypeError):
+            failed=True
+        if failed:
+            # 400/403/404: malformed destination or blocked recipient. Never retain URLs/descriptions.
+            permanent=code in (400,403,404)
+            attempts=row['delivery_attempts']+1
+            try:delay=max(1,min(3600,int(retry_after)))
+            except (TypeError,ValueError,OverflowError):delay=0
+            delay=max(delay,min(300,2**min(attempts,8)))
+            with db() as c:
+                c.execute('UPDATE telegram_inbox SET delivered=?,delivery_error=?,delivery_attempts=?,retry_at=? WHERE bot_id=? AND update_id=? AND delivered=0',
+                          (-1 if permanent else 0,('permanent_http_' if permanent else 'retryable_')+(str(code) if isinstance(code,int) else 'network'),attempts,time.time()+delay,bot_id,row['update_id']))
+            totals['failed']+=1
+            continue
+        with db() as c:
+            c.execute("UPDATE telegram_inbox SET delivered=1,delivery_error='',delivery_attempts=delivery_attempts+1,retry_at=0 WHERE bot_id=? AND update_id=? AND delivered=0",(bot_id,row['update_id']))
+        totals['delivered']+=1
+    return totals
+
+
+def durable_offset(bot_id):
+    with db() as c:
+        row=c.execute('SELECT next_offset FROM telegram_offsets WHERE bot_id=?',(bot_id,)).fetchone()
+        return row['next_offset'] if row else 0
 
 
 def runtime_state(key, value):
@@ -95,7 +115,8 @@ def main():
             # Never print the exception URL: Telegram's API URL contains the bot token.
             raise SystemExit('Cannot validate the bot with Telegram. Check the NEW token and network access. '+type(exc).__name__)
         print('Cafe Nima Telegram attendance ready: @'+username,flush=True)
-        offset=0
+        bot_id=str(profile['result']['id'])
+        offset=durable_offset(bot_id)
         while True:
             try:
                 events=telegram('getUpdates',{'offset':offset,'timeout':25,'allowed_updates':'["message"]'})
@@ -103,11 +124,9 @@ def main():
                     raise ValueError('Telegram polling failed')
                 runtime_state('online','1')
                 for update in events.get('result',[]):
-                    offset=max(offset,update['update_id']+1)
-                    if 'message' in update:
-                        try:dispatch(update['message'])
-                        except Exception as exc:
-                            print('Telegram message processing issue:',type(exc).__name__,flush=True)
+                    process_update(update,bot_id)
+                    offset=durable_offset(bot_id)
+                flush_replies(bot_id)
             except KeyboardInterrupt:
                 break
             except Exception as exc:

@@ -131,6 +131,7 @@ def test_concurrent_payment_is_recorded_once(client):
     def settle(_):
         with TestClient(server.app) as other:
             other.cookies.update(cookie)
+            other.headers['X-CSRF-Token']=client.headers['X-CSRF-Token']
             return other.post(f"/api/orders/{order['id']}/pay",json={'method':'cash'}).status_code
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert sorted(pool.map(settle,range(2)))==[200,409]
